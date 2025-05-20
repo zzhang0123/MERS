@@ -2,6 +2,7 @@ import healpy as hp
 import numpy as np
 from pygdsm import GlobalSkyModel
 import matplotlib.pyplot as plt
+import glob
 
 
 def smoothed_maps(maps, beam_transfer):
@@ -121,3 +122,31 @@ class SynchrotronExtrapolator:
 
         return extrap_maps if len(target_freqs) > 1 else extrap_maps.squeeze()
 
+class RhinoBeam:
+    def __init__(self, filepath='/Users/zzhang/Downloads/HornWet/'):
+        # read and sort filenames in filepath
+        self.filenames = sorted(glob.glob(filepath + '/*.fits'))
+        self.nside = hp.get_nside(hp.read_map(self.filenames[0]))
+
+    def get_beam_l(self, normalize=True):
+        # Derive the beam transfer function bl as the sqrt of the power spectrum (Cl) of the beam map. 
+        # This effectively take the azimuthal average of the beam map
+        bl_list = []
+        for filename in self.filenames:
+            beam = hp.read_map(filename)
+            # Compute the power spectrum (Cl) of the beam map
+            cl_beam = hp.anafast(beam, lmax=3*self.nside)
+            # The beam transfer function bl is the square root of Cl, normalized to bl[0]=1
+            bl = np.sqrt(cl_beam)
+            if normalize:
+                bl /= bl[0]
+            bl_list.append(bl)
+        self.bl_list = bl_list 
+
+    def generate_BCF(self, ref_map, ref_beam_window):
+        # Convolve the ref_map with the reference beam transfer function
+        ref_map_convolved = hp.smoothing(ref_map, beam_window=ref_beam_window)
+        # Convolve the ref_map with the beam transfer functions
+        BCF_cube = [hp.smoothing(ref_map, beam_window=beam_window) / ref_map_convolved
+                            for beam_window in self.bl_list]
+        return np.array(BCF_cube).T   # Shape: (npix, nfreq)
