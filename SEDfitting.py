@@ -3,7 +3,7 @@ import numpy as np
 from joblib import Parallel, delayed
 from scipy.optimize import minimize
 from tqdm import tqdm
-from scipy.linalg import orth
+from scipy.linalg import orth, null_space
 
 
 
@@ -248,24 +248,29 @@ class moment_basis:
         else:
             return values
 
-    def null_space_covariance(self, beta0, max_order, Cov_mat, remove_1st_moment=False):
+    def null_space_covariance(self, beta0, max_order, Cov_mat, remove_1st_moment=False, BCF=None):
         xs_beta0 = np.exp(self.log_xs*beta0)
         
         n_moments = max_order + 1
         # Use Vandermonde matrix for stable polynomial basis
         vander = np.vander(self.log_xs, N=n_moments, increasing=True)
-        matrix = vander * xs_beta0[:, np.newaxis]
+        matrix = vander * xs_beta0[:, np.newaxis]  # shape (nfreqs, n_moments)
         # Normalize each column to have unit l2-norm
         norms = np.linalg.norm(matrix, axis=0)
         matrix /= norms[np.newaxis, :]  # Normalize each column by its l2-norm
+        if BCF is not None:
+            matrix *= BCF[:, np.newaxis]
 
         if remove_1st_moment:
             # Remove the second column (i.e., the first moment)
             matrix = np.delete(matrix, 1, axis=1)
 
         # Get orthonormal basis using modified Gram-Schmidt
-        ortho_basis = orth(matrix, rcond=1e-10)
-        proj = np.identity(ortho_basis.shape[0]) - ortho_basis @ ortho_basis.T
+        # ortho_basis = orth(matrix, rcond=1e-10)
+        # proj = np.identity(ortho_basis.shape[0]) - ortho_basis @ ortho_basis.T
+        ortho_basis = null_space(matrix.T, rcond=1e-10)
+        proj = ortho_basis @ ortho_basis.T 
+
         result = proj @ Cov_mat @ proj.T
         return np.sqrt(np.trace(result)/np.trace(Cov_mat))
       
