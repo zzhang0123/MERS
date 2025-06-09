@@ -142,7 +142,7 @@ def cg(
 
 
 
-def linear_fit_per_pixel(data, basis, return_loss=True):
+def linear_fit_1D(data, basis, return_loss=True):
     """
     Perform linear fit for the spectrum of a single pixel.
 
@@ -179,7 +179,7 @@ def linear_model(basis, coefficients):
     model = basis @ coefficients
     return model
 
-class moment_basis:
+class fg_moment_basis:
     def __init__(self, freqs, nu_ref=None):  # Removed trailing comma
         """Initialize spectral moment basis generator.
         
@@ -237,7 +237,7 @@ class moment_basis:
             return loss
 
         # Minimize the loss function using scipy.optimize.minimize
-        init_coeffs = linear_fit_per_pixel(data, self.basis(beta0_init,  max_order+1, remove_1st_moment=True), return_loss=False)
+        init_coeffs = linear_fit_1D(data, self.basis(beta0_init,  max_order+1, remove_1st_moment=True), return_loss=False)
         initial_guess = [beta0_init] + list(init_coeffs)
         result = minimize(loss_func, initial_guess, method='L-BFGS-B',
                           options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-8})
@@ -274,7 +274,43 @@ class moment_basis:
         result = proj @ Cov_mat @ proj.T
         return np.sqrt(np.trace(result)/np.trace(Cov_mat))
       
-def fit_entire_map(data_cube, spectral_index_map, freqs, nu_ref=None, max_order=5, fixed_pivot=True):
+def full_fit(fg_moment_basis):
+    """
+    Perform joint SED fit for foreground and 21cm map.
+    """
+    def fit_full_data_with_adapted_pivot(self, data, beta0_init, max_order, signal_basis, return_loss=True):
+        """
+        Perform SED fit for a single pixel.
+        """
+        def loss_func(params):
+            beta = params[0]
+            coefficients = params[1:]
+            fg_basis = self.basis(beta,  max_order+1, remove_1st_moment=True)
+            basis = np.hstack((fg_basis, signal_basis))
+            model_SED = linear_model(basis, coefficients)
+            # define the loss function as the squares of the residuals
+            residuals = (data - model_SED) / data
+            loss = np.sqrt(np.mean(residuals**2))
+            return loss
+
+        # Minimize the loss function using scipy.optimize.minimize
+        initial_basis = np.hstack((self.basis(beta0_init,  max_order+1, remove_1st_moment=True), signal_basis))
+        init_coeffs = linear_fit_1D(data, initial_basis, return_loss=False)
+        initial_guess = [beta0_init] + list(init_coeffs)
+        result = minimize(loss_func, initial_guess, method='L-BFGS-B',
+                          options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-8})
+        values = result.x
+        if return_loss:
+            loss = loss_func(values)
+            return values, loss
+        else:
+            return values
+
+
+
+
+
+def fit_entire_fg_map(data_cube, spectral_index_map, freqs, nu_ref=None, max_order=5, fixed_pivot=True):
     """
     Perform per-pixel spectral fitting across entire map.
     
@@ -295,11 +331,11 @@ def fit_entire_map(data_cube, spectral_index_map, freqs, nu_ref=None, max_order=
     loss_map = np.zeros(npix)
     
     # Precompute basis generator
-    basis_gen = moment_basis(freqs=freqs, nu_ref=nu_ref)
+    basis_gen = fg_moment_basis(freqs=freqs, nu_ref=nu_ref)
     
     if fixed_pivot:
         results = Parallel(n_jobs=-1)(
-            delayed(linear_fit_per_pixel)(
+            delayed(linear_fit_1D)(
                 data_cube[i], 
                 basis_gen.basis(spectral_index_map[i], n_params)
             )
