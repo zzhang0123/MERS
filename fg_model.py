@@ -1,6 +1,6 @@
 import healpy as hp
 import numpy as np
-#from pygdsm import GlobalSkyModel
+from pygdsm import GlobalSkyModel
 import matplotlib.pyplot as plt
 import glob
 
@@ -17,29 +17,6 @@ def smoothed_maps(maps, beam_transfer):
     for i, bl in enumerate(beam_transfer):
         smoothed_map[:, i] = hp.smoothing(maps[:, i], beam_window=bl)
     return smoothed_map
-
-# def GSM_maps(freqs, nside=512, beam_transfer=None):
-#     """Generate GSM maps for multiple frequencies"""
-#     # Initialize GSM with parameters
-#     gsm = GlobalSkyModel(freq_unit='MHz')
-#     gsm.nside=nside
-#     # Generate maps for all frequencies
-#     maps = []
-#     for freq in np.atleast_1d(freqs):
-#         maps.append(gsm.generate(freq))
-    
-#     # if len(maps) == 1:
-#     #     return maps[0]  # Return single map if only one frequency was provided
-#     # Stack maps along frequency axis
-#     maps = np.stack(maps, axis=1)  # Shape: (npix, nfreq)
-
-#     # Apply smoothing if requested
-#     if beam_transfer is not None:
-#         maps = smoothed_maps(maps, beam_transfer)
-
-#     if maps.shape[1] == 1:
-#         return maps.squeeze()  # Return single map if only one frequency was provided
-#     return maps
 
 class SynchrotronExtrapolator:
     def __init__(self, reference_map=None, spectral_index_map=None, reference_freq=408):
@@ -187,7 +164,32 @@ class FreeFreeExtrapolator:
 
         return extrap_maps if len(target_freqs) > 1 else extrap_maps.squeeze()
 
+
+def GSM_maps(freqs, nside=512, beam_transfer=None):
+    """Generate GSM maps for multiple frequencies"""
+    # Initialize GSM with parameters
+    gsm = GlobalSkyModel(freq_unit='MHz')
+    gsm.nside=nside
+    # Generate maps for all frequencies
+    maps = []
+    for freq in np.atleast_1d(freqs):
+        maps.append(gsm.generate(freq))
+    
+    # if len(maps) == 1:
+    #     return maps[0]  # Return single map if only one frequency was provided
+    # Stack maps along frequency axis
+    maps = np.stack(maps, axis=1)  # Shape: (npix, nfreq)
+
+    # Apply smoothing if requested
+    if beam_transfer is not None:
+        maps = smoothed_maps(maps, beam_transfer)
+
+    if maps.shape[1] == 1:
+        return maps.squeeze()  # Return single map if only one frequency was provided
+    return maps   
+
 class RhinoBeam:
+
     def __init__(self, filepath='/Users/zzhang/Downloads/HornWet/'):
         # read and sort filenames in filepath
         self.filenames = sorted(glob.glob(filepath + '/*.fits'))
@@ -215,3 +217,14 @@ class RhinoBeam:
         BCF_cube = [hp.smoothing(ref_map, beam_window=beam_window) / ref_map_convolved
                             for beam_window in self.bl_list]
         return np.array(BCF_cube).T   # Shape: (npix, nfreq)
+
+    def generate_SVD_beams(self):
+        beam_list=[]
+        for filename in self.filenames:
+            beam = hp.read_map(filename)
+            beam_list.append(beam)
+        beam_list = np.array(beam_list)
+        # Perform SVD on the beam_list
+        U, S, Vt = np.linalg.svd(beam_list, full_matrices=False)
+        return U, S, Vt
+
