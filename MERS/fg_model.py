@@ -3,7 +3,13 @@ import numpy as np
 from pygdsm import GlobalSkyModel
 import matplotlib.pyplot as plt
 import glob
+import os
 
+
+haslam_path = os.path.join(os.path.dirname(__file__), 'haslam408_dsds_Remazeilles2014.fits')
+cnnpl_path = os.path.join(os.path.dirname(__file__), 'cnn56arcmin_beta.npy')
+EM_path = os.path.join(os.path.dirname(__file__), 'EM_mean_std.fits')
+COM_path = os.path.join(os.path.dirname(__file__), 'COM_CompMap_freefree-commander_0256_R2.00.fits')
 
 def smoothed_maps(maps, beam_transfer):
     """
@@ -27,11 +33,11 @@ class SynchrotronExtrapolator:
         - reference_freq: reference frequency in MHz (default: 408)
         """
         if reference_map is None:
-            self.reference_map = hp.read_map('haslam408_dsds_Remazeilles2014.fits')
+            self.reference_map = hp.read_map(haslam_path)
         else:
             self.reference_map = reference_map
         if spectral_index_map is None:
-            self.specidx_map = np.load('cnn56arcmin_beta.npy')
+            self.specidx_map = np.load(cnnpl_path)
         else:
             self.specidx_map = spectral_index_map
         self.ref_freq = reference_freq
@@ -126,11 +132,11 @@ class FreeFreeExtrapolator:
         Both these maps upgraded from Nside 256 to 512
         """
         if em_map is None:
-            self.em_map = hp.ud_grade(hp.read_map('EM_mean_std.fits'), 512)
+            self.em_map = hp.ud_grade(hp.read_map(EM_path), 512)
         else:
             self.em_map = em_map
         if etemp_map is None:
-            self.etemp_map = hp.ud_grade(hp.read_map('COM_CompMap_freefree-commander_0256_R2.00.fits', field=4), 512)
+            self.etemp_map = hp.ud_grade(hp.read_map(COM_path, field=4), 512)
         else:
             self.etemp_map = etemp_map
         
