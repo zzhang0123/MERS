@@ -233,12 +233,13 @@ class fg_moment_basis:
         xs_beta0 = np.exp(self.log_xs*beta0)
         
         # Use Vandermonde matrix for stable polynomial basis
-        vander = np.vander(self.log_xs, N=max_order+1, increasing=True)
+        vander = np.vander(self.log_xs, N=max_order+1, increasing=True) # Shape: (n_freqs, max_order+1)
         result = vander * xs_beta0[:, np.newaxis]
 
         if remove_1st_moment:
             # Remove the second column (i.e., the first moment)
             result = np.delete(result, 1, axis=1)
+            assert result.shape[1] == max_order, "result should have max_order columns"
 
         # Apply Beam chromaticity corrections: first try BCSVD, if not provided, then BCF
         if BCSVD is not None:
@@ -250,7 +251,7 @@ class fg_moment_basis:
         norms = np.linalg.norm(result, axis=0)
         result /= norms[np.newaxis, :]  # Normalize each column by its l2-norm
 
-        return result
+        return result  # Shape: (n_freqs, n_modes)
 
     def fit_data_with_moments(self, 
                             data, 
@@ -285,7 +286,7 @@ class fg_moment_basis:
                                         return_loss=False)
             initial_guess = [beta_value] + list(init_coeffs)
             result = minimize(loss_func, initial_guess, method='L-BFGS-B',
-                            options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-8})
+                            options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-10})
             values = result.x
             if return_loss:
                 loss = loss_func(values)
@@ -310,7 +311,7 @@ class fg_moment_basis:
         # ortho_basis = orth(matrix, rcond=1e-10)
         # proj = np.identity(ortho_basis.shape[0]) - ortho_basis @ ortho_basis.T
         ortho_basis = null_space(matrix.T, rcond=1e-10)
-        return ortho_basis
+        return ortho_basis # Shape: (n_freqs, n_modes)
 
 
 
@@ -325,69 +326,106 @@ class Global_21cm_extraction(fg_moment_basis):
         """
         Compute the covariance matrix projection in the null space of the spectral moment basis.
         """
-        ortho_basis = self.null_space_basis(beta0, max_order, adaptive_pivot=adaptive_pivot, BCF=BCF, BCSVD=BCSVD)
-        proj = ortho_basis @ ortho_basis.T 
+        # if BCF is None or the dimension is 1:
+        if BCF is None or BCF.ndim == 1:
+            ortho_basis = self.null_space_basis(beta0, max_order, adaptive_pivot=adaptive_pivot, BCF=BCF, BCSVD=BCSVD)
+            proj = ortho_basis @ ortho_basis.T 
 
-        result = proj @ Cov_mat @ proj.T
-        return np.sqrt(np.trace(result)/np.trace(Cov_mat))
-    
-    def joint_fg_21_fit(self, 
-                        data, 
-                        signal_basis,
-                        beta_value, 
-                        max_order, 
-                        adaptive_pivot=True,
-                        BCSVD=None, 
-                        BCF=None,
-                        return_loss=True):
-        """
-        Perform SED fit for a single pixel.
-        Args:
-            data: 1D array of data, shape (n_freqs,)
-            signal_basis: 2D array of signal basis functions, shape (n_freqs, n_signal_modes)
-            beta_value: Reference spectral index (dimensionless)
-        """
-
-        aux_basis = self.basis(beta_value,  max_order, remove_1st_moment=adaptive_pivot, BCSVD=BCSVD, BCF=BCF)
-        aux_basis = np.hstack((aux_basis, signal_basis))
-        n_signal_modes = signal_basis.shape[1]
-
-        if adaptive_pivot:
-            # Fit the data with the adapted pivot
-            
-            def loss_func(params):
-                beta = params[0]
-                coefficients = params[1:]
-                fg_basis = self.basis(beta,  max_order, remove_1st_moment=adaptive_pivot, BCSVD=BCSVD, BCF=BCF)
-                basis = np.hstack((fg_basis, signal_basis))
-                model_SED = linear_model(basis, coefficients)
-                # define the loss function as the squares of the residuals
-                residuals = (data - model_SED) / data
-                loss = np.sqrt(np.mean(residuals**2))
-                return loss
-
-            # Minimize the loss function using scipy.optimize.minimize
-            init_coeffs = linear_fit_1D(data, 
-                                        aux_basis, 
-                                        return_loss=False)
-            initial_guess = [beta_value] + list(init_coeffs)
-            result = minimize(loss_func, initial_guess, method='L-BFGS-B',
-                            options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-8})
-            values = result.x
-            if return_loss:
-                loss = loss_func(values)
-                return values, loss
-            else:
-                return values
-    
+            result = proj @ Cov_mat @ proj.T
+            return np.sqrt(np.trace(result)/np.trace(Cov_mat))
         else:
-            # Fit the data with the fixed pivot
-            if return_loss:
-                coefficients, loss = linear_fit_1D(data, aux_basis, return_loss=True)
-                return coefficients, loss
-            else:
-                coefficients = linear_fit_1D(data, aux_basis, return_loss=False)
-                return coefficients
+            assert  BCF.ndim == 2, "BCF should be 1D or 2D"
+            dim = BCF.shape[0]
+            result = np.zeros(dim)
+            for i in range(dim):
+                ortho_basis = self.null_space_basis(beta0, max_order, adaptive_pivot=adaptive_pivot, BCF=BCF[i], BCSVD=BCSVD)
+                proj = ortho_basis @ ortho_basis.T
+                result[i] = np.sqrt(np.trace(proj @ Cov_mat @ proj.T)/np.trace(Cov_mat))
+            return np.mean(result)
+
+    def projection_in_fg_null_space(self, data, beta0_list, max_order, true_signal, 
+                                        BCF_list=None,  
+                                        BCSVD=None,
+                                        adaptive_pivot=False):
+        '''
+        Compute the projection of the data in the null space of the spectral moment basis.
+        '''
+        n_pix = data.shape[0]
+        data_proj_ls = []
+        true_signal_proj_ls = []
+        if BCF_list is None:
+            BCF_list = [None] * n_pix
+        for i in range(n_pix):
+            ortho_basis = self.null_space_basis(beta0_list[i], 
+                                                max_order, 
+                                                adaptive_pivot=adaptive_pivot, 
+                                                BCF=BCF_list[i], 
+                                                BCSVD=BCSVD)
+            proj = ortho_basis @ ortho_basis.T
+            # obtain the data[i] projection onto this basis
+            data_proj = data[i] @ proj
+            data_proj_ls.append(data_proj)
+            true_signal_proj = true_signal @ proj
+            true_signal_proj_ls.append(true_signal_proj)
+        return np.array(data_proj_ls), np.array(true_signal_proj_ls)
+    
+    # def joint_fg_21_fit(self, 
+    #                     data, 
+    #                     signal_basis,
+    #                     beta_value, 
+    #                     max_order, 
+    #                     adaptive_pivot=True,
+    #                     BCSVD=None, 
+    #                     BCF=None,
+    #                     return_loss=True):
+    #     """
+    #     Perform SED fit for a single pixel.
+    #     Args:
+    #         data: 1D array of data, shape (n_freqs,)
+    #         signal_basis: 2D array of signal basis functions, shape (n_freqs, n_signal_modes)
+    #         beta_value: Reference spectral index (dimensionless)
+    #     """
+
+    #     aux_basis = self.basis(beta_value,  max_order, remove_1st_moment=adaptive_pivot, BCSVD=BCSVD, BCF=BCF)
+    #     aux_basis = np.hstack((aux_basis, signal_basis))
+    #     n_signal_modes = signal_basis.shape[1]
+
+    #     if adaptive_pivot:
+    #         # Fit the data with the adapted pivot
+            
+    #         def loss_func(params):
+    #             beta = params[0]
+    #             coefficients = params[1:]
+    #             fg_basis = self.basis(beta,  max_order, remove_1st_moment=adaptive_pivot, BCSVD=BCSVD, BCF=BCF)
+    #             basis = np.hstack((fg_basis, signal_basis))
+    #             model_SED = linear_model(basis, coefficients)
+    #             # define the loss function as the squares of the residuals
+    #             residuals = (data - model_SED) / data
+    #             loss = np.sqrt(np.mean(residuals**2))
+    #             return loss
+
+    #         # Minimize the loss function using scipy.optimize.minimize
+    #         init_coeffs = linear_fit_1D(data, 
+    #                                     aux_basis, 
+    #                                     return_loss=False)
+    #         initial_guess = [beta_value] + list(init_coeffs)
+    #         result = minimize(loss_func, initial_guess, method='L-BFGS-B',
+    #                         options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-8})
+    #         values = result.x
+    #         if return_loss:
+    #             loss = loss_func(values)
+    #             return values, loss
+    #         else:
+    #             return values
+    
+    #     else:
+    #         # Fit the data with the fixed pivot
+    #         if return_loss:
+    #             coefficients, loss = linear_fit_1D(data, aux_basis, return_loss=True)
+    #             return coefficients, loss
+    #         else:
+    #             coefficients = linear_fit_1D(data, aux_basis, return_loss=False)
+    #             return coefficients
         
 
 
