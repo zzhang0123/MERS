@@ -64,7 +64,7 @@ class Achromatic_Gaussian_Beam(RhinoBeam):
         self.fwhm_deg = fwhm_deg
         self.n_freqs = n_freqs
 
-        pyuv_obj = GaussianBeam(sigma = np.deg2rad(self.fwhm_deg),
+        pyuv_obj = GaussianBeam(sigma = np.deg2rad(self.fwhm_deg/2.355),
                                 sigma_type='power')
         gaussian_beam = pyuv_obj.to_uvbeam(freq_array=np.array([70e6]),
                                            beam_type='power', 
@@ -86,6 +86,12 @@ class Achromatic_Gaussian_Beam(RhinoBeam):
             bl_list.append(bl)
         self.bl_list = bl_list
         pass
+
+    def generate_SVD_beams(self):
+        beam_list = np.array(self.beams)
+        # Perform SVD on the beam_list
+        U, S, Vt = np.linalg.svd(beam_list, full_matrices=False)
+        return U, S, Vt
     
 
     
@@ -120,12 +126,6 @@ class Circular_Aperture_Gaussian_Envolope(Achromatic_Gaussian_Beam):
         data_array = data_array[0,0]
 
         self.beams = [b*gaussian_beam for b in data_array]
-    
-    def generate_SVD_beams(self):
-        beam_list = np.array(self.beams)
-        # Perform SVD on the beam_list
-        U, S, Vt = np.linalg.svd(beam_list, full_matrices=False)
-        return U, S, Vt
 
 
 
@@ -205,3 +205,82 @@ def plot_svd_beam_modes(Vt, nest=False, figsize=(12, 8)):
     plt.tight_layout()
     # plt.subplots_adjust(bottom=0.15)  # Make space for color bar
     plt.show()
+
+# -------
+
+def gaussian(x, amp, sigma, mu=0):
+    return amp * np.exp(- ((x-mu)**2) / (2 * sigma**2))
+
+def sinc_squared(x, fwhm):
+    a = 5.57 / fwhm
+    return (np.sin(a*x/2) / (a* x / 2))**2
+
+class Achromatic_Gaussian(RhinoBeam):
+    def __init__(self, nfreqs, fwhm_deg=10, nside=512):
+        npix = 12 * (nside**2)
+        self.nside=nside
+        theta, _ = hp.pix2ang(nside, np.arange(npix)) # set up thetas for gaussian function
+        sigma_rad = np.deg2rad(fwhm_deg) / (2*np.sqrt(2*np.log(2))) 
+        beam = gaussian(theta, amp=1, sigma=sigma_rad, mu=0)
+        beam  = beam / np.sum(beam) # normalise beam
+        self.beams = [beam for i in range(nfreqs)]
+        pass
+    
+    def get_beam_l(self, normalize=True):
+        bl_list = []
+        for beam in self.beams:
+            cl_beam = hp.anafast(beam, lmax=3*self.nside)
+            bl = np.sqrt(cl_beam)
+            if normalize:
+                bl /= bl[0]
+            bl_list.append(bl)
+        self.bl_list = bl_list
+        pass
+
+    def generate_SVD_beams(self):
+        beam_list = np.array(self.beams)
+        # Perform SVD on the beam_list
+        U, S, Vt = np.linalg.svd(beam_list, full_matrices=False)
+        return U, S, Vt
+
+class Achromatic_Sinc_Squared(Achromatic_Gaussian):
+    def __init__(self, nfreqs, fwhm_deg=10, nside=512):
+        npix = 12 * (nside**2)
+        self.nside = nside
+        theta, _ = hp.pix2ang(nside, np.arange(npix)) # set up thetas for gaussian function
+
+        beam = sinc_squared(theta, fwhm=np.deg2rad(fwhm_deg))
+        beam  = beam / np.sum(beam) # normalise beam
+        self.beams = [beam for i in range(nfreqs)]
+        pass
+
+class Chromatic_Gaussian(Achromatic_Gaussian):
+    def __init__(self, freq_list_mhz, fwhm_function, fwhm_func_params, nside=512):
+        fwhms = [fwhm_function(nu, fwhm_func_params) for nu in freq_list_mhz] # get fwhm from input function
+        npix = 12 * (nside**2)
+        self.nside = nside
+        theta, _ = hp.pix2ang(nside=nside, ipix=np.arange(npix))
+
+        beam_list = []
+        for f in fwhms:
+            sigma_rad = np.deg2rad(f) / (2*np.sqrt(2*np.log(2))) 
+            beam = gaussian(theta, amp=1, sigma=sigma_rad)
+            beam = beam / np.sum(beam)
+            beam_list.append(beam)
+        self.beams = beam_list
+        pass
+
+class Chromatic_Sinc_Squared(Achromatic_Gaussian):
+    def __init__(self, freq_list_mhz, fwhm_function, fwhm_func_params, nside=512):
+        fwhms = [fwhm_function(nu, fwhm_func_params) for nu in freq_list_mhz] # get fwhm from input function
+        npix = 12 * (nside**2)
+        self.nside = nside
+        theta, _ = hp.pix2ang(nside=nside, ipix=np.arange(npix))
+
+        beam_list = []
+        for f in fwhms:
+            beam = sinc_squared(theta, fwhm=np.deg2rad(f))
+            beam = beam / np.sum(beam)
+            beam_list.append(beam)
+        self.beams = beam_list
+        pass
