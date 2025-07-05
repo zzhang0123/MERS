@@ -5,11 +5,11 @@ import matplotlib.pyplot as plt
 import glob
 import os
 
-
-haslam_path = os.path.join(os.path.dirname(__file__), 'haslam408_dsds_Remazeilles2014.fits')
-cnnpl_path = os.path.join(os.path.dirname(__file__), 'cnn56arcmin_beta.npy')
-EM_path = os.path.join(os.path.dirname(__file__), 'EM_mean_std.fits')
-COM_path = os.path.join(os.path.dirname(__file__), 'COM_CompMap_freefree-commander_0256_R2.00.fits')
+filepath = os.path.dirname(__file__)
+haslam_path = os.path.join(filepath, 'data/haslam408_dsds_Remazeilles2014.fits')
+cnnpl_path = os.path.join(filepath, 'data/cnn56arcmin_beta.npy')
+EM_path = os.path.join(filepath, 'data/EM_mean_std.fits')
+COM_path = os.path.join(filepath, 'data/COM_CompMap_freefree-commander_0256_R2.00.fits')
 
 def smoothed_maps(maps, beam_transfer):
     """
