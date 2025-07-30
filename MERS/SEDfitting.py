@@ -162,7 +162,7 @@ def linear_fit_1D(data, basis, return_loss=True):
         assert not np.any(np.isnan(residuals)), "NaN values detected in residuals"
         assert np.all(b > 1e-10), "b is too small to define RMS fractional error.."
         loss = np.sqrt(np.mean( (residuals / np.abs(b) ) ** 2))  # Define the loss as the root of mean squared fractional error
-        return coefficients, loss
+        return coefficients, loss, residuals/b
 
     return coefficients
 
@@ -213,7 +213,7 @@ class fg_moment_basis:
         else:
             self.log_xs = np.log(freqs / nu_ref)  # Frequency ratios ν/ν_ref
 
-    def basis(self, beta0, max_order, remove_1st_moment=False, BCSVD=None, BCF=None):
+    def _single_pivot_basis(self, beta0, max_order, remove_1st_moment=False, BCSVD=None, BCF=None):
         """Generate orthogonalized spectral basis functions.
         
         Implements φ_k(ν) = (ν/ν_ref)^β₀ [ln(ν/ν_ref)]^k for k=0, ..., max_order
@@ -252,61 +252,104 @@ class fg_moment_basis:
         result /= norms[np.newaxis, :]  # Normalize each column by its l2-norm
 
         return result  # Shape: (n_freqs, n_modes)
+    
+    def basis(self, beta0, max_order, remove_1st_moment=False, BCSVD=None, BCF=None):
+        if isinstance(beta0, (int, float)):
+            assert isinstance(max_order, (int, float))
+            return self._single_pivot_basis(beta0, max_order, remove_1st_moment=remove_1st_moment, BCF=BCF, BCSVD=BCSVD)
+        elif isinstance(beta0, (list, np.ndarray)):
+            assert isinstance(max_order, (list, np.ndarray))
+            assert len(beta0) == len(max_order), "beta0 and max_order should have the same length"
+            return np.hstack([self._single_pivot_basis(b, m, remove_1st_moment=remove_1st_moment, BCF=BCF, BCSVD=BCSVD) for b, m in zip(beta0, max_order)])
+        pass
 
     def fit_data_with_moments(self, 
                             data, 
                             beta_value, 
                             max_order, 
                             adaptive_pivot=True,
+                            remove_1st_moment=False,
                             BCSVD=None, 
                             BCF=None,
                             return_loss=True):
         """
         Perform SED fit for a single pixel.
         """
+        if adaptive_pivot is False and remove_1st_moment is True:
+            raise ValueError("remove_1st_moment should be False when adaptive_pivot is False")
 
-        aux_basis = self.basis(beta_value,  max_order, remove_1st_moment=adaptive_pivot, BCSVD=BCSVD, BCF=BCF)
+        aux_basis = self.basis(beta_value,  max_order, remove_1st_moment=remove_1st_moment, BCSVD=BCSVD, BCF=BCF)
 
         if adaptive_pivot:
             # Fit the data with the adapted pivot
+            # Currently, the adapted pivot is implemented with single pivot scenario
+            if isinstance(beta_value, (int, float)):
+                assert isinstance(max_order, (int, float))
+                n_pivots = 1
+                beta_value = [beta_value]
+            elif isinstance(beta_value, (list, np.ndarray)):
+                assert isinstance(max_order, (list, np.ndarray))
+                n_pivots = len(beta_value)
+            else:
+                raise ValueError("beta_value and max_order should be either int, float, list or np.ndarray")
             
+
             def loss_func(params):
-                beta = params[0]
-                coefficients = params[1:]
-                basis = self.basis(beta,  max_order, remove_1st_moment=adaptive_pivot, BCSVD=BCSVD, BCF=BCF)
+                if n_pivots == 1:
+                    beta = params[0]
+                else:
+                    beta = params[:n_pivots]
+                coefficients = params[n_pivots:]
+                basis = self.basis(beta,  max_order, remove_1st_moment=remove_1st_moment, BCSVD=BCSVD, BCF=BCF)
                 model_SED = linear_model(basis, coefficients)
                 # define the loss function as the squares of the residuals
                 residuals = (data - model_SED) / data
                 loss = np.sqrt(np.mean(residuals**2))
                 return loss
 
+            def loss_func_2(params):
+                if n_pivots == 1:
+                    beta = params[0]
+                else:
+                    beta = params[:n_pivots]
+                coefficients = params[n_pivots:]
+                basis = self.basis(beta,  max_order, remove_1st_moment=remove_1st_moment, BCSVD=BCSVD, BCF=BCF)
+                model_SED = linear_model(basis, coefficients)
+                # define the loss function as the squares of the residuals
+                residuals = (data - model_SED) / data
+                loss = np.sqrt(np.mean(residuals**2))
+                return loss, residuals
+
             # Minimize the loss function using scipy.optimize.minimize
             init_coeffs = linear_fit_1D(data, 
                                         aux_basis, 
                                         return_loss=False)
-            initial_guess = [beta_value] + list(init_coeffs)
-            result = minimize(loss_func, initial_guess, method='L-BFGS-B',
-                            options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-10})
+            initial_guess = beta_value + list(init_coeffs)
+            result = minimize(loss_func, 
+                              initial_guess, 
+                              method='L-BFGS-B',
+                              options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-12})
             values = result.x
             if return_loss:
-                loss = loss_func(values)
-                return values, loss
+                loss, residuals = loss_func_2(values)
+                return values, loss, residuals
             else:
                 return values
     
         else:
             # Fit the data with the fixed pivot
             if return_loss:
-                coefficients, loss = linear_fit_1D(data, aux_basis, return_loss=True)
-                return coefficients, loss
+                coefficients, loss, frac_resi = linear_fit_1D(data, aux_basis, return_loss=True)
+                return coefficients, loss, frac_resi
             else:
                 coefficients = linear_fit_1D(data, aux_basis, return_loss=False)
                 return coefficients
         
-    def null_space_basis(self, beta0, max_order, adaptive_pivot=False, BCF=None, BCSVD=None):
-
-        matrix = self.basis(beta0, max_order, remove_1st_moment=adaptive_pivot, BCF=BCF, BCSVD=BCSVD)
-
+    def null_space_basis(self, beta0, max_order, remove_1st_moment=False, BCF=None, BCSVD=None):
+        # if only one beta0 and one max_order is provided, we can use the basis function directly,
+        # otherwise we need to compute the basis for each beta0 in the list, and then stack them
+        matrix = self.basis(beta0, max_order, remove_1st_moment=remove_1st_moment, BCF=BCF, BCSVD=BCSVD)
+        
         # Get orthonormal basis using modified Gram-Schmidt
         # ortho_basis = orth(matrix, rcond=1e-10)
         # proj = np.identity(ortho_basis.shape[0]) - ortho_basis @ ortho_basis.T
@@ -322,13 +365,13 @@ class Global_21cm_extraction(fg_moment_basis):
     Perform joint SED fit for foreground and cosmological 21cm signal.
     """
 
-    def variance_in_fg_null_space(self, Cov_mat, beta0, max_order, adaptive_pivot=False, BCF=None, BCSVD=None):
+    def variance_in_fg_null_space(self, Cov_mat, beta0, max_order, remove_1st_moment=False, BCF=None, BCSVD=None):
         """
         Compute the covariance matrix projection in the null space of the spectral moment basis.
         """
         # if BCF is None or the dimension is 1:
         if BCF is None or BCF.ndim == 1:
-            ortho_basis = self.null_space_basis(beta0, max_order, adaptive_pivot=adaptive_pivot, BCF=BCF, BCSVD=BCSVD)
+            ortho_basis = self.null_space_basis(beta0, max_order, remove_1st_moment=remove_1st_moment, BCF=BCF, BCSVD=BCSVD)
             proj = ortho_basis @ ortho_basis.T 
 
             result = proj @ Cov_mat @ proj.T
@@ -338,7 +381,7 @@ class Global_21cm_extraction(fg_moment_basis):
             dim = BCF.shape[0]
             result = np.zeros(dim)
             for i in range(dim):
-                ortho_basis = self.null_space_basis(beta0, max_order, adaptive_pivot=adaptive_pivot, BCF=BCF[i], BCSVD=BCSVD)
+                ortho_basis = self.null_space_basis(beta0, max_order, remove_1st_moment=remove_1st_moment, BCF=BCF[i], BCSVD=BCSVD)
                 proj = ortho_basis @ ortho_basis.T
                 result[i] = np.sqrt(np.trace(proj @ Cov_mat @ proj.T)/np.trace(Cov_mat))
             return np.mean(result)
@@ -346,7 +389,7 @@ class Global_21cm_extraction(fg_moment_basis):
     def projection_in_fg_null_space(self, data, beta0_list, max_order, true_signal, 
                                         BCF_list=None,  
                                         BCSVD=None,
-                                        adaptive_pivot=False):
+                                        remove_1st_moment=False):
         '''
         Compute the projection of the data in the null space of the spectral moment basis.
         '''
@@ -358,7 +401,7 @@ class Global_21cm_extraction(fg_moment_basis):
         for i in range(n_pix):
             ortho_basis = self.null_space_basis(beta0_list[i], 
                                                 max_order, 
-                                                adaptive_pivot=adaptive_pivot, 
+                                                remove_1st_moment=remove_1st_moment, 
                                                 BCF=BCF_list[i], 
                                                 BCSVD=BCSVD)
             proj = ortho_basis @ ortho_basis.T
@@ -433,7 +476,14 @@ class Global_21cm_extraction(fg_moment_basis):
 
 
 
-def fit_fg_cube(data_cube, spectral_index_map, freqs, nu_ref=None, max_order=5, adaptive_pivot=True, BCSVD=None, BCF=None):
+def fit_fg_cube(data_cube, 
+                spectral_index_map, 
+                freqs, 
+                nu_ref=None, 
+                max_order=5, 
+                adaptive_pivot=True, 
+                remove_1st_moment=False,
+                BCSVD=None, BCF=None):
     """
     Perform per-pixel spectral fitting across entire map.
     
@@ -450,14 +500,16 @@ def fit_fg_cube(data_cube, spectral_index_map, freqs, nu_ref=None, max_order=5, 
     """
     npix, nfreqs = data_cube.shape
     n_coeffs = max_order + 1
-    if adaptive_pivot:
+    if remove_1st_moment:
         n_coeffs -= 1
+    if adaptive_pivot:
         pivot_map = np.zeros(npix)
     if BCSVD is not None:
         n_coeffs *= BCSVD.shape[1]
     
     coeff_map = np.zeros((npix, n_coeffs))
     loss_map = np.zeros(npix)
+    residuals = np.zeros((npix, nfreqs))
     
     # Precompute basis generator
     basis_gen = fg_moment_basis(freqs=freqs, nu_ref=nu_ref)
@@ -469,6 +521,7 @@ def fit_fg_cube(data_cube, spectral_index_map, freqs, nu_ref=None, max_order=5, 
                     spectral_index_map[i],
                     max_order,
                     adaptive_pivot=adaptive_pivot,
+                    remove_1st_moment=remove_1st_moment,
                     BCF=BCF[i],
                     return_loss=True
                 )
@@ -481,6 +534,7 @@ def fit_fg_cube(data_cube, spectral_index_map, freqs, nu_ref=None, max_order=5, 
                     spectral_index_map[i],
                     max_order,
                     adaptive_pivot=adaptive_pivot,
+                    remove_1st_moment=remove_1st_moment,
                     BCSVD=BCSVD,
                     return_loss=True
                 )
@@ -490,15 +544,98 @@ def fit_fg_cube(data_cube, spectral_index_map, freqs, nu_ref=None, max_order=5, 
     # Unpack results
     for i in range(npix):
         if adaptive_pivot:
-            aux, loss_map[i] = results[i]
+            aux, loss_map[i], residuals[i] = results[i]
             pivot_map[i] = aux[0]
             coeff_map[i] = aux[1:]
         else:
-            coeff_map[i], loss_map[i] = results[i]
+            coeff_map[i], loss_map[i], residuals[i] = results[i]
     if adaptive_pivot:
-        return coeff_map, loss_map, pivot_map
+        return coeff_map, loss_map, residuals, pivot_map
     else:
-        return coeff_map, loss_map
+        return coeff_map, loss_map, residuals
+
+def fit_fg_cube_2pivots(data_cube, 
+                        spectral_index_map1, 
+                        spectral_index_map2, 
+                        freqs, 
+                        nu_ref=None, 
+                        max_order1=5, 
+                        max_order2=5, 
+                        adaptive_pivot=True, 
+                        remove_1st_moment=False,
+                        BCSVD=None, 
+                        BCF=None):
+    """
+    Perform per-pixel spectral fitting across entire map.
+    
+    Parameters:
+    - data_cube: (npix, nfreqs) array of spectral measurements
+    - spectral_index_map: (npix,) array of spectral indices (beta0 values)
+    - freqs: Array of observation frequencies [MHz]
+    - nu_ref: Reference frequency [MHz]
+    - n_moments: Number of spectral moments to fit
+    
+    Returns:
+    - coeff_map: (npix, n_moments) array of coefficients
+    - loss_map: (npix,) array of fractional MSE values
+    """
+    npix, nfreqs = data_cube.shape
+    n_coeffs = max_order1 + max_order2 + 2
+    if remove_1st_moment:
+        n_coeffs -= 2
+    if adaptive_pivot:
+        pivot_map1 = np.zeros(npix)
+        pivot_map2 = np.zeros(npix)
+    if BCSVD is not None:
+        n_coeffs *= BCSVD.shape[1]
+    
+    coeff_map = np.zeros((npix, n_coeffs))
+    loss_map = np.zeros(npix)
+    residuals = np.zeros((npix, nfreqs))
+    
+    # Precompute basis generator
+    basis_gen = fg_moment_basis(freqs=freqs, nu_ref=nu_ref)
+
+    if BCSVD is None and BCF is not None:
+        results = Parallel(n_jobs=-1, verbose=0)(
+                delayed(basis_gen.fit_data_with_moments)(
+                    data_cube[i],
+                    [spectral_index_map1[i], spectral_index_map2[i]],
+                    [max_order1, max_order2],
+                    adaptive_pivot=adaptive_pivot,
+                    remove_1st_moment=remove_1st_moment,
+                    BCF=BCF[i],
+                    return_loss=True
+                )
+                for i in tqdm(range(npix), desc="Processing pixels", leave=False, dynamic_ncols=True)
+            )
+    else:
+        results = Parallel(n_jobs=-1, verbose=0)(
+                delayed(basis_gen.fit_data_with_moments)(
+                    data_cube[i],
+                    [spectral_index_map1[i], spectral_index_map2[i]],
+                    [max_order1, max_order2],
+                    adaptive_pivot=adaptive_pivot,
+                    remove_1st_moment=remove_1st_moment,
+                    BCSVD=BCSVD,
+                    return_loss=True
+                )
+                for i in tqdm(range(npix), desc="Processing pixels", leave=False, dynamic_ncols=True)
+            )
+        
+    # Unpack results
+    for i in range(npix):
+        if adaptive_pivot:
+            aux, loss_map[i], residuals[i] = results[i]
+            pivot_map1[i] = aux[0]
+            pivot_map2[i] = aux[1]
+            coeff_map[i] = aux[2:]
+        else:
+            coeff_map[i], loss_map[i], residuals[i] = results[i]
+    if adaptive_pivot:
+        return coeff_map, loss_map, residuals, pivot_map1, pivot_map2
+    else:
+        return coeff_map, loss_map, residuals
 
 
 

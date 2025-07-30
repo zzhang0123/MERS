@@ -2,7 +2,7 @@ import healpy as hp
 import numpy as np
 from pygdsm import GlobalSkyModel
 import matplotlib.pyplot as plt
-import glob
+from scipy.interpolate import RegularGridInterpolator
 import os
 
 filepath = os.path.dirname(__file__)
@@ -10,6 +10,9 @@ haslam_path = os.path.join(filepath, 'data/haslam408_dsds_Remazeilles2014.fits')
 cnnpl_path = os.path.join(filepath, 'data/cnn56arcmin_beta.npy')
 EM_path = os.path.join(filepath, 'data/EM_mean_std.fits')
 COM_path = os.path.join(filepath, 'data/COM_CompMap_freefree-commander_0256_R2.00.fits')
+GLEAM_path_408 = os.path.join(filepath, "data/gleam_nside512_K_allsky_408MHz.npy")
+# GLEAM_path_16 = os.path.join(filepath, "data/gleam_nside512_K_allsky_50MHz_16freqs.npz")
+
 
 def smoothed_maps(maps, beam_transfer):
     """
@@ -24,22 +27,37 @@ def smoothed_maps(maps, beam_transfer):
         smoothed_map[:, i] = hp.smoothing(maps[:, i], beam_window=bl)
     return smoothed_map
 
+def change_nside(map, nside_out):
+    """
+    Change the nside of a map
+    - map: input map
+    - nside_out: desired nside
+    Returns: map with the new nside
+    """
+    nside_old = hp.get_nside(map)
+    if nside_old != nside_out:
+        return hp.ud_grade(map, nside_out=nside_out)
+    return map
+
 class SynchrotronExtrapolator:
-    def __init__(self, reference_map=None, spectral_index_map=None, reference_freq=408):
+    def __init__(self, reference_map=None, spectral_index_map=None, reference_freq=408, nside=128):
         """
         Initialize with:
         - reference_map: Haslam 408 MHz map
         - spectral_index_map: the spectral index map
         - reference_freq: reference frequency in MHz (default: 408)
         """
+        self.nside = nside
         if reference_map is None:
             self.reference_map = hp.read_map(haslam_path)
         else:
             self.reference_map = reference_map
+        self.reference_map = change_nside(self.reference_map, nside)
         if spectral_index_map is None:
             self.specidx_map = np.load(cnnpl_path)
         else:
             self.specidx_map = spectral_index_map
+        self.specidx_map = change_nside(self.specidx_map, nside)
         self.ref_freq = reference_freq
 
     def index_curvature(self, target_freqs):
@@ -124,21 +142,22 @@ class SynchrotronExtrapolator:
         return extrap_maps if len(target_freqs) > 1 else extrap_maps.squeeze()
     
 class FreeFreeExtrapolator:
-    def __init__(self, em_map=None, etemp_map=None):
+    def __init__(self, em_map=None, etemp_map=None, nside=128):
         """
         Initialize with:
         - em_map: Hutchenrouter emission measure map
         - etemp_map: Planck electron temp map
         Both these maps upgraded from Nside 256 to 512
         """
+        self.nside = nside
         if em_map is None:
-            self.em_map = hp.ud_grade(hp.read_map(EM_path), 512)
+            self.em_map = hp.ud_grade(hp.read_map(EM_path), nside_out=nside)
         else:
-            self.em_map = em_map
+            self.em_map = hp.ud_grade(em_map, nside_out=nside)
         if etemp_map is None:
-            self.etemp_map = hp.ud_grade(hp.read_map(COM_path, field=4), 512)
+            self.etemp_map = hp.ud_grade(hp.read_map(COM_path, field=4), nside_out=nside)
         else:
-            self.etemp_map = etemp_map
+            self.etemp_map = hp.ud_grade(etemp_map, nside_out=nside)
         
     def map(self, target_freqs, beam_transfer=None):
         """
@@ -152,7 +171,7 @@ class FreeFreeExtrapolator:
 
         # Ensure target_freqs is an array-like
         target_freqs = np.atleast_1d(target_freqs) / 1000. #freqs in GHz
-        npix = 12 * 512 * 512
+        npix = hp.nside2npix(self.nside)    
         nfreqs = len(target_freqs)
         extrap_maps = np.zeros((npix, nfreqs))
         
@@ -170,12 +189,25 @@ class FreeFreeExtrapolator:
 
         return extrap_maps if len(target_freqs) > 1 else extrap_maps.squeeze()
 
+def CNN_PL_sky(freq_list, beam_transfer=None, nside=128, return_spec_index=False):
+    Mel_sync_model = SynchrotronExtrapolator(nside=nside)
+    mel_sync = Mel_sync_model.map(freq_list, beam_transfer=beam_transfer)
 
-def GSM_maps(freqs, nside=512, beam_transfer=None):
+    Mel_ff_model = FreeFreeExtrapolator(nside=nside)
+    mel_ff = Mel_ff_model.map(freq_list, beam_transfer=beam_transfer)
+
+    mel_diffuse = mel_sync + mel_ff
+    if return_spec_index:
+        freq_mid_ind = len(freq_list) // 2
+        spec_index = Mel_sync_model.index_curvature(freq_list[freq_mid_ind])[0]
+        return mel_diffuse, spec_index
+    return mel_diffuse # shape: (npix, nfreq)
+
+def GSM_maps(freqs, nside=128, beam_transfer=None):
     """Generate GSM maps for multiple frequencies"""
     # Initialize GSM with parameters
     gsm = GlobalSkyModel(freq_unit='MHz')
-    gsm.nside=nside
+
     # Generate maps for all frequencies
     maps = []
     for freq in np.atleast_1d(freqs):
@@ -190,7 +222,48 @@ def GSM_maps(freqs, nside=512, beam_transfer=None):
     if beam_transfer is not None:
         maps = smoothed_maps(maps, beam_transfer)
 
-    if maps.shape[1] == 1:
-        return maps.squeeze()  # Return single map if only one frequency was provided
-    return maps   
+    # Initialize new map cube
+    npix = hp.nside2npix(nside)
+    map_cube = np.zeros((npix, maps.shape[1]))
 
+    # Loop over each frequency/time slice
+    for i in range(maps.shape[1]):
+        map_cube[:, i] = hp.ud_grade(maps[:, i],
+                                    nside_out=nside,
+                                    power=2)  # power=2 for intensity maps
+
+    if map_cube.shape[1] == 1:
+        return map_cube.squeeze()  # Return single map if only one frequency was provided
+    return map_cube  
+
+
+# class ptsrc_interp():
+#     def __init__(self, freq_list, filepath=GLEAM_path_16, nside=128, beam_transfer=None):
+#         data = np.load(filepath)
+#         self.freq_list = freq_list
+#         self.psfg = np.array([
+#                         hp.ud_grade(m, nside_out=nside)
+#                         for m in data["psrc_sky"]
+#                         ])
+#         interp = RegularGridInterpolator((data["freqs"], np.arange(np.shape(self.psfg)[-1])), self.psfg)
+#         X, Y = np.meshgrid(freq_list, np.arange(np.shape(self.psfg)[-1]))
+#         maps = interp((X, Y)) # shape: (npix, nfreq)
+
+#         if beam_transfer is not None:
+#             self.maps = smoothed_maps(maps, beam_transfer)
+#         else:
+#             self.maps = maps
+
+
+class ptsrc_powerlaw():
+    def __init__(self, filepath=GLEAM_path_408, beta_psfg = -2.3, nside=128):
+        self.beta_psfg = beta_psfg
+        data = np.load(filepath)
+        self.psfg = hp.ud_grade(data, nside_out=nside)
+
+    def __call__(self, freq_list, beam_transfer=None):
+        maps = np.outer(self.psfg, (freq_list/408)**self.beta_psfg)
+        if beam_transfer is not None:
+            return smoothed_maps(maps, beam_transfer)
+        else:
+            return maps
