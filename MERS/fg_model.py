@@ -237,6 +237,8 @@ def GSM_maps(freqs, nside=128, beam_transfer=None):
     return map_cube  
 
 
+# point source model with varying beta
+
 # class ptsrc_interp():
 #     def __init__(self, freq_list, filepath=GLEAM_path_16, nside=128, beam_transfer=None):
 #         data = np.load(filepath)

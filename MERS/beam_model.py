@@ -20,7 +20,7 @@ class RhinoBeam:
         for filename in self.filenames:
             beam = hp.read_map(filename)
             # Compute the power spectrum (Cl) of the beam map
-            cl_beam = hp.anafast(beam, lmax=3*self.nside)
+            cl_beam = hp.anafast(beam, lmax=3*self.nside - 1)
             # The beam transfer function bl is the square root of Cl, normalized to bl[0]=1
             bl = np.sqrt(cl_beam)
             if normalize:
@@ -31,10 +31,13 @@ class RhinoBeam:
 
     def generate_BCF(self, ref_map, ref_beam_window):
         # Convolve the ref_map with the reference beam transfer function
-        ref_map_convolved = hp.smoothing(ref_map, beam_window=ref_beam_window)
+        ref_beam_window_scaled = ref_beam_window * np.sqrt(4 * np.pi / (2 * np.arange(len(ref_beam_window)) + 1))
+        ref_map_convolved = hp.smoothing(ref_map, beam_window=ref_beam_window_scaled)
         # Convolve the ref_map with the beam transfer functions
+        Bell_list = [ B_l0 * np.sqrt(4 * np.pi / (2 * np.arange(len(B_l0)) + 1)) for B_l0 in self.bl_list ]
+
         BCF_cube = [hp.smoothing(ref_map, beam_window=beam_window) / ref_map_convolved
-                            for beam_window in self.bl_list]
+                            for beam_window in Bell_list]
         return np.array(BCF_cube).T   # Shape: (npix, nfreq)
 
     def generate_SVD_beams(self):
