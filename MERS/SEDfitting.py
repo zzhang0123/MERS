@@ -411,69 +411,6 @@ class Global_21cm_extraction(fg_moment_basis):
             true_signal_proj = true_signal @ proj
             true_signal_proj_ls.append(true_signal_proj)
         return np.array(data_proj_ls), np.array(true_signal_proj_ls)
-    
-    # def joint_fg_21_fit(self, 
-    #                     data, 
-    #                     signal_basis,
-    #                     beta_value, 
-    #                     max_order, 
-    #                     adaptive_pivot=True,
-    #                     BCSVD=None, 
-    #                     BCF=None,
-    #                     return_loss=True):
-    #     """
-    #     Perform SED fit for a single pixel.
-    #     Args:
-    #         data: 1D array of data, shape (n_freqs,)
-    #         signal_basis: 2D array of signal basis functions, shape (n_freqs, n_signal_modes)
-    #         beta_value: Reference spectral index (dimensionless)
-    #     """
-
-    #     aux_basis = self.basis(beta_value,  max_order, remove_1st_moment=adaptive_pivot, BCSVD=BCSVD, BCF=BCF)
-    #     aux_basis = np.hstack((aux_basis, signal_basis))
-    #     n_signal_modes = signal_basis.shape[1]
-
-    #     if adaptive_pivot:
-    #         # Fit the data with the adapted pivot
-            
-    #         def loss_func(params):
-    #             beta = params[0]
-    #             coefficients = params[1:]
-    #             fg_basis = self.basis(beta,  max_order, remove_1st_moment=adaptive_pivot, BCSVD=BCSVD, BCF=BCF)
-    #             basis = np.hstack((fg_basis, signal_basis))
-    #             model_SED = linear_model(basis, coefficients)
-    #             # define the loss function as the squares of the residuals
-    #             residuals = (data - model_SED) / data
-    #             loss = np.sqrt(np.mean(residuals**2))
-    #             return loss
-
-    #         # Minimize the loss function using scipy.optimize.minimize
-    #         init_coeffs = linear_fit_1D(data, 
-    #                                     aux_basis, 
-    #                                     return_loss=False)
-    #         initial_guess = [beta_value] + list(init_coeffs)
-    #         result = minimize(loss_func, initial_guess, method='L-BFGS-B',
-    #                         options={'maxiter': 500, 'ftol': 1e-12, 'gtol': 1e-8})
-    #         values = result.x
-    #         if return_loss:
-    #             loss = loss_func(values)
-    #             return values, loss
-    #         else:
-    #             return values
-    
-    #     else:
-    #         # Fit the data with the fixed pivot
-    #         if return_loss:
-    #             coefficients, loss = linear_fit_1D(data, aux_basis, return_loss=True)
-    #             return coefficients, loss
-    #         else:
-    #             coefficients = linear_fit_1D(data, aux_basis, return_loss=False)
-    #             return coefficients
-        
-
-
-
-
 
 
 def fit_fg_cube(data_cube, 
@@ -481,7 +418,7 @@ def fit_fg_cube(data_cube,
                 freqs, 
                 nu_ref=None, 
                 max_order=5, 
-                adaptive_pivot=True, 
+                adaptive_pivot=False, 
                 remove_1st_moment=False,
                 BCSVD=None, BCF=None):
     """
@@ -492,8 +429,12 @@ def fit_fg_cube(data_cube,
     - spectral_index_map: (npix,) array of spectral indices (beta0 values)
     - freqs: Array of observation frequencies [MHz]
     - nu_ref: Reference frequency [MHz]
-    - n_moments: Number of spectral moments to fit
-    
+    - max_order: Maximum order of spectral moments to model
+    - adaptive_pivot: Whether to use adaptive pivoting (True) or fixed pivoting (False)
+    - remove_1st_moment: Whether to remove the first moment from the basis when using adaptive pivoting.
+    - BCSVD: (nfreqs, nbeam) array of beam chromaticity corrections (using SVD modes)
+    - BCF: (npix, nfreqs) array of beam chromaticity corrections (using Beam correction factor)
+
     Returns:
     - coeff_map: (npix, n_moments) array of coefficients
     - loss_map: (npix,) array of fractional MSE values
@@ -711,3 +652,10 @@ def fit_fg_plus_21_cube(data_cube, signal_basis, spectral_index_map, freqs, nu_r
         return coeff_map, loss_map
 
 
+def optimised_fit(data_cube, pivots, freq_list, max_order):
+    *_, fitted_pivot= \
+    fit_fg_cube(data_cube, pivots, freq_list, nu_ref=None, max_order=max_order, adaptive_pivot=True, remove_1st_moment=False)
+
+    mom_coef, loss,  frac_resi = \
+    fit_fg_cube(data_cube, fitted_pivot, freq_list, nu_ref=None, max_order=max_order, adaptive_pivot=False, remove_1st_moment=False)
+    return mom_coef, loss, frac_resi, fitted_pivot
