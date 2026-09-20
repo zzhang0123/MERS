@@ -61,3 +61,13 @@ outputs/*.pdf
 outputs/*.png
 outputs/*.jpg
 outputs/*.jpeg
+
+# Agent configuration and local state (machine-local, not shared)
+/.agents/
+/.claude/
+/AGENTS.md
+/CLAUDE.md
+/.agent-state/
+
+# Vendored upstream clone: 21cmVAE is installed from PyPI/git via environment.yml
+src/21cmvae/
