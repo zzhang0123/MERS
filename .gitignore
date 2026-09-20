@@ -5,8 +5,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Specific data file
-MERS/data/gleam_nside512_K_allsky_50MHz_16freqs.npz
+# Large input maps: kept locally only, see MERS/data/README.md
+MERS/data/*
+!MERS/data/README.md
 
 # Additional Python ignores
 *.so
